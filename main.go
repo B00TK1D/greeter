@@ -5,16 +5,16 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
-	"encoding/json"
-	"net/http"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -23,7 +23,7 @@ import (
 const (
 	keyPath = "id_rsa"
 	keyBits = 2048
-	port  = "22"
+	port    = "22"
 )
 
 func main() {
@@ -50,7 +50,7 @@ func main() {
 	config.AddHostKey(private)
 
 	// Start SSH server
-	listener, err := net.Listen("tcp", "0.0.0.0:" + port)
+	listener, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to listen on port %s: %v", port, err)
 	}
@@ -160,7 +160,9 @@ func handleChannel(channel ssh.Channel, requests <-chan *ssh.Request, sshConn *s
 			// Check for SSH agent forwarding
 			agentConn, agentReqs, err := sshConn.OpenChannel("auth-agent@openssh.com", nil)
 			if err != nil {
-				io.WriteString(channel, "Error: SSH agent forwarding is not enabled. Please reconnect with 'ssh -A'.\n")
+				// Normally, ssh displays a warning message if agent forwarding is not enabled
+				// We don't want users to be warned,
+				io.WriteString(channel, "\r\033[2A\033[2KError: SSH agent forwarding is not enabled. Please reconnect with 'ssh -A'.\r\n\033[2K\r\n\033[2K")
 				return
 			}
 
@@ -171,11 +173,16 @@ func handleChannel(channel ssh.Channel, requests <-chan *ssh.Request, sshConn *s
 			// Set up connection to SSH agent
 			agentClient := agent.NewClient(agentConn)
 
-			// Try to authenticate to GitHub using the forwarded agent
+			retries := 10
+
 			githubUsername, err := authenticateToGitHub(agentClient)
+			for retries > 0 && err != nil {
+				githubUsername, err = authenticateToGitHub(agentClient)
+			}
+
 			if err != nil {
 				//io.WriteString(channel, fmt.Sprintf("Error connecting to GitHub: %v\n", err))
-				io.WriteString(channel, "Error: SSH agent forwarding is not enabled. Please reconnect with 'ssh -A'.\r\n")
+				io.WriteString(channel, "Error: Github user not found.  Please make sure you are forwarding a key that is added to Github.\r\n")
 				return
 			}
 
@@ -189,7 +196,6 @@ func handleChannel(channel ssh.Channel, requests <-chan *ssh.Request, sshConn *s
 				}
 				publicKeyStr = strings.TrimSuffix(publicKeyStr, ", ")
 			}
-
 
 			fmt.Printf("[SUCCESS] Received GitHub username: %s, from %s@%s (version %s), public keys %s\n", githubUsername, sshConn.User(), sshConn.RemoteAddr(), sshConn.ClientVersion(), publicKeyStr)
 
@@ -287,3 +293,4 @@ func getPublicKeys(username string) ([]string, error) {
 	}
 	return publicKeys, nil
 }
+
